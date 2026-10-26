@@ -692,6 +692,28 @@ func Test_reentrancyIDFromContext(t *testing.T) {
 	})
 }
 
+func Test_metadataValue(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		assert.Empty(t, metadataValue(nil, "Dapr-Actor-Activation-Id"))
+		assert.Empty(t, metadataValue(map[string]string{"content-type": "application/json"}, "Dapr-Actor-Activation-Id"))
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		assert.Equal(t, "a1", metadataValue(map[string]string{"DAPR-ACTOR-ACTIVATION-ID": "a1"}, "Dapr-Actor-Activation-Id"))
+	})
+
+	t.Run("empty value", func(t *testing.T) {
+		assert.Empty(t, metadataValue(map[string]string{"Dapr-Actor-Activation-Id": ""}, "Dapr-Actor-Activation-Id"))
+	})
+
+	t.Run("empty duplicate skipped", func(t *testing.T) {
+		for range 100 {
+			md := map[string]string{"dapr-actor-activation-id": "", "Dapr-Actor-Activation-Id": "a1"}
+			require.Equal(t, "a1", metadataValue(md, "Dapr-Actor-Activation-Id"))
+		}
+	})
+}
+
 func TestSubscribeActorEventsActivationID(t *testing.T) {
 	t.Parallel()
 
@@ -702,13 +724,19 @@ func TestSubscribeActorEventsActivationID(t *testing.T) {
 	t.Cleanup(func() { _ = stop() })
 	session := recvWithTimeout(t, srv.sessions)
 
-	keys := []string{"Dapr-Actor-Activation-Id", "dapr-actor-activation-id", "DAPR-ACTOR-ACTIVATION-ID", ""}
+	keys := []string{"Dapr-Actor-Activation-Id", "dapr-actor-activation-id", "DAPR-ACTOR-ACTIVATION-ID", "", "empty duplicate"}
 	for i, key := range keys {
 		var md map[string]string
 		want := ""
 		if key != "" {
 			want = "act-" + strconv.Itoa(i)
-			md = map[string]string{key: want, "content-type": "application/json", "Dapr-Reentrancy-Id": "re-" + want}
+			md = map[string]string{"content-type": "application/json", "Dapr-Reentrancy-Id": "re-" + want}
+			if key == "empty duplicate" {
+				md["dapr-actor-activation-id"] = ""
+				md["Dapr-Actor-Activation-Id"] = want
+			} else {
+				md[key] = want
+			}
 		}
 
 		session.push(t, &pb.SubscribeActorEventsResponseAlpha1{
