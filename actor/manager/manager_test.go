@@ -381,7 +381,7 @@ func TestActivationIDLateCreatorDoesNotOverwrite(t *testing.T) {
 	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
 	live, _ := m.live(t, "id")
 	close(release)
-	assert.Equal(t, actorErr.ErrActorIDNotFound, <-done)
+	assert.Equal(t, actorErr.ErrActivationSuperseded, <-done)
 
 	after, activationID := m.live(t, "id")
 	assert.Same(t, live, after)

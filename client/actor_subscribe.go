@@ -592,6 +592,8 @@ func actorErrMessage(aerr actorErr.ActorErr) string {
 		return "actor factory not set"
 	case actorErr.ErrSaveStateFailed:
 		return "failed to save actor state"
+	case actorErr.ErrActivationSuperseded:
+		return "actor was activated by another activation, retry"
 	default:
 		return fmt.Sprintf("actor error %d", aerr)
 	}

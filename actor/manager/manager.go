@@ -154,7 +154,7 @@ func (m *DefaultActorManagerContext) getAndCreateActorContainerIfNotExist(ctx co
 	if activationID == "" || active.activationID == activationID {
 		return active.container, actorErr.Success
 	}
-	return nil, actorErr.ErrActorIDNotFound
+	return nil, actorErr.ErrActivationSuperseded
 }
 
 func (m *DefaultActorManagerContext) isLive(actorID string, container ActorContainerContext) bool {

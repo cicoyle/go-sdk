@@ -676,7 +676,7 @@ func (a *LateCreatorActor) Count(context.Context) (int64, error) {
 
 func (a *LateCreatorActor) ReminderCall(string, []byte, string, string) {}
 
-func TestActorLateCreatorNotFound(t *testing.T) {
+func TestActorLateCreatorRetryable(t *testing.T) {
 	s := newServer("", nil)
 	s.registerBaseHandler()
 	var nested atomic.Pointer[func()]
@@ -704,7 +704,7 @@ func TestActorLateCreatorNotFound(t *testing.T) {
 			}
 			nested.Store(&f)
 			rr := rawActorCall(t, s, http.MethodPut, base+tc.path, "Dapr-Actor-Activation-Id: a", tc.body)
-			assert.Equal(t, http.StatusNotFound, rr.Code)
+			assert.Equal(t, http.StatusInternalServerError, rr.Code)
 		})
 	}
 }

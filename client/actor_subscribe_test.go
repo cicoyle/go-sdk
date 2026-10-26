@@ -609,6 +609,7 @@ func Test_actorErrToStatusCode(t *testing.T) {
 		{"actor type not found", actorErr.ErrActorTypeNotFound, codes.NotFound},
 		{"actor method not found", actorErr.ErrActorMethodNoFound, codes.NotFound},
 		{"actor id not found", actorErr.ErrActorIDNotFound, codes.NotFound},
+		{"activation superseded", actorErr.ErrActivationSuperseded, codes.Internal},
 		{"reminder func undefined", actorErr.ErrReminderFuncUndefined, codes.NotFound},
 		{"reminder params invalid", actorErr.ErrRemindersParamsInvalid, codes.InvalidArgument},
 		{"timer params invalid", actorErr.ErrTimerParamsInvalid, codes.InvalidArgument},
