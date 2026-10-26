@@ -552,7 +552,7 @@ func TestRawPayloadDecode(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	// no sidecar in unit tests, fail the dapr client dial fast instead of blocking 5s per new actor
+	// An invalid timeout makes dapr.NewClient fail without dialing, so test actors get a nil client and must not touch state.
 	os.Setenv("DAPR_CLIENT_TIMEOUT_SECONDS", "-1")
 	os.Exit(m.Run())
 }
@@ -580,6 +580,13 @@ func (a *ActivationEchoActor) ReminderCall(string, []byte, string, string) {
 
 func rawActorRequest(t *testing.T, s *Server, method, path, header, body string) string {
 	t.Helper()
+	rr := rawActorCall(t, s, method, path, header, body)
+	require.Equal(t, http.StatusOK, rr.Code)
+	return rr.Body.String()
+}
+
+func rawActorCall(t *testing.T, s *Server, method, path, header, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	raw := method + " " + path + " HTTP/1.1\r\nHost: localhost\r\n"
 	if header != "" {
 		raw += header + "\r\n"
@@ -590,8 +597,7 @@ func rawActorRequest(t *testing.T, s *Server, method, path, header, body string)
 
 	rr := httptest.NewRecorder()
 	s.mux.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
-	return rr.Body.String()
+	return rr
 }
 
 func TestActorActivationIDHeader(t *testing.T) {
@@ -654,4 +660,51 @@ func TestActorActivationIDHeader(t *testing.T) {
 		rawActorRequest(t, s, http.MethodDelete, "/actors/activationEchoActor/"+run+"delete", "", "")
 		assert.Equal(t, "1", count(t, "delete", "Dapr-Actor-Activation-Id: a"))
 	})
+}
+
+type LateCreatorActor struct {
+	actor.ServerImplBaseCtx
+}
+
+func (a *LateCreatorActor) Type() string {
+	return "lateCreatorActor"
+}
+
+func (a *LateCreatorActor) Count(context.Context) (int64, error) {
+	return 1, nil
+}
+
+func (a *LateCreatorActor) ReminderCall(string, []byte, string, string) {}
+
+func TestActorLateCreatorNotFound(t *testing.T) {
+	s := newServer("", nil)
+	s.registerBaseHandler()
+	var nested atomic.Pointer[func()]
+	s.RegisterActorImplFactoryContext(func() actor.ServerContext {
+		if f := nested.Swap(nil); f != nil {
+			(*f)()
+		}
+		return &LateCreatorActor{}
+	})
+
+	reminder, err := json.Marshal(api.ActorReminderParams{DueTime: "1s", Period: "1s"})
+	require.NoError(t, err)
+	timer, err := json.Marshal(api.ActorTimerParam{CallBack: "Count", DueTime: "1s", Period: "1s"})
+	require.NoError(t, err)
+
+	for _, tc := range []struct{ name, path, body string }{
+		{"method", "/method/Count", ""},
+		{"reminder", "/method/remind/r", string(reminder)},
+		{"timer", "/method/timer/t", string(timer)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := "/actors/lateCreatorActor/" + tc.name
+			f := func() {
+				rawActorRequest(t, s, http.MethodPut, base+"/method/Count", "Dapr-Actor-Activation-Id: b", "")
+			}
+			nested.Store(&f)
+			rr := rawActorCall(t, s, http.MethodPut, base+tc.path, "Dapr-Actor-Activation-Id: a", tc.body)
+			assert.Equal(t, http.StatusNotFound, rr.Code)
+		})
+	}
 }

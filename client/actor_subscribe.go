@@ -393,7 +393,7 @@ func (s *actorEventSubscription) handleInvoke(stream pb.Dapr_SubscribeActorEvent
 	// caller sent none mirrors the HTTP actor callback, which sets no explicit
 	// response content-type either.
 	var metadata map[string]string
-	if ct := contentTypeFromMetadata(req.GetMetadata()); ct != "" {
+	if ct := metadataValue(req.GetMetadata(), contentTypeMetadataKey); ct != "" {
 		metadata = map[string]string{contentTypeMetadataKey: ct}
 	}
 
@@ -408,19 +408,13 @@ func (s *actorEventSubscription) handleInvoke(stream pb.Dapr_SubscribeActorEvent
 	})
 }
 
-// contentTypeFromMetadata returns the content-type entry from actor callback
-// metadata, matching the key case-insensitively.
-func contentTypeFromMetadata(md map[string]string) string {
-	return metadataValue(md, contentTypeMetadataKey)
-}
-
 func actorCallbackContext(ctx context.Context, md map[string]string) context.Context {
 	return actor.WithActivationID(withActorCallbackMetadata(ctx, md), metadataValue(md, actor.ActivationIDHeader))
 }
 
 func metadataValue(md map[string]string, key string) string {
 	for k, v := range md {
-		if strings.EqualFold(k, key) {
+		if v != "" && strings.EqualFold(k, key) {
 			return v
 		}
 	}

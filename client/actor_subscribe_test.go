@@ -681,6 +681,15 @@ func Test_reentrancyIDFromContext(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, "id-2", id)
 	})
+
+	t.Run("empty duplicate skipped", func(t *testing.T) {
+		for range 100 {
+			ctx := withActorCallbackMetadata(t.Context(), map[string]string{"dapr-reentrancy-id": "", "Dapr-Reentrancy-Id": "id-3"})
+			id, ok := reentrancyIDFromContext(ctx)
+			require.True(t, ok)
+			require.Equal(t, "id-3", id)
+		}
+	})
 }
 
 func TestSubscribeActorEventsActivationID(t *testing.T) {

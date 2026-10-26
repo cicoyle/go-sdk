@@ -176,7 +176,7 @@ func (s *Server) registerBaseHandler() {
 		methodName := chi.URLParam(r, "methodName")
 		reqData, _ := io.ReadAll(r.Body)
 		rspData, err := runtime.GetActorRuntimeInstanceContext().InvokeActorMethod(actorCallbackContext(r), actorType, actorID, methodName, reqData)
-		if err == actorErr.ErrActorTypeNotFound {
+		if err == actorErr.ErrActorTypeNotFound || err == actorErr.ErrActorIDNotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -215,7 +215,7 @@ func (s *Server) registerBaseHandler() {
 		reminderName := chi.URLParam(r, "reminderName")
 		reqData, _ := io.ReadAll(r.Body)
 		err := runtime.GetActorRuntimeInstanceContext().InvokeReminder(actorCallbackContext(r), actorType, actorID, reminderName, reqData)
-		if err == actorErr.ErrActorTypeNotFound {
+		if err == actorErr.ErrActorTypeNotFound || err == actorErr.ErrActorIDNotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -234,7 +234,7 @@ func (s *Server) registerBaseHandler() {
 		timerName := chi.URLParam(r, "timerName")
 		reqData, _ := io.ReadAll(r.Body)
 		err := runtime.GetActorRuntimeInstanceContext().InvokeTimer(actorCallbackContext(r), actorType, actorID, timerName, reqData)
-		if err == actorErr.ErrActorTypeNotFound {
+		if err == actorErr.ErrActorTypeNotFound || err == actorErr.ErrActorIDNotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

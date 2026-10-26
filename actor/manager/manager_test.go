@@ -16,6 +16,7 @@ package manager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strconv"
 	"sync"
@@ -32,7 +33,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// no sidecar in unit tests, fail the dapr client dial fast instead of blocking 5s per new actor
+	// An invalid timeout makes dapr.NewClient fail without dialing, so test actors get a nil client and must not touch state.
 	os.Setenv("DAPR_CLIENT_TIMEOUT_SECONDS", "-1")
 	os.Exit(m.Run())
 }
@@ -163,7 +164,13 @@ func TestInvokeTimer(t *testing.T) {
 type ActivationTestActor struct {
 	actor.ServerImplBaseCtx
 	count atomic.Int64
+	saves atomic.Int64
 	hold  func()
+}
+
+func (a *ActivationTestActor) SaveState(ctx context.Context) error {
+	a.saves.Add(1)
+	return a.ServerImplBaseCtx.SaveState(ctx)
 }
 
 func (a *ActivationTestActor) Type() string {
@@ -181,7 +188,14 @@ func (a *ActivationTestActor) Hold(context.Context) (int64, error) {
 	return a.count.Add(1), nil
 }
 
+func (a *ActivationTestActor) Fail(context.Context) error {
+	return errors.New("fail")
+}
+
 func (a *ActivationTestActor) ReminderCall(string, []byte, string, string) {
+	if a.hold != nil {
+		a.hold()
+	}
 	a.count.Add(1)
 }
 
@@ -279,34 +293,6 @@ func TestActivationIDNewIDResetsActor(t *testing.T) {
 	assert.Equal(t, 2, m.createdCount())
 }
 
-func TestActivationIDRetiredIDRejected(t *testing.T) {
-	t.Parallel()
-	m := newActivationTestManager(t)
-
-	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
-	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
-	live, _ := m.live(t, "id")
-
-	_, aerr := m.InvokeMethod(actor.WithActivationID(t.Context(), "a"), "id", "Count", nil)
-	assert.Equal(t, actorErr.ErrActorIDNotFound, aerr)
-	params, err := json.Marshal(&api.ActorReminderParams{DueTime: "1s", Period: "1s"})
-	require.NoError(t, err)
-	assert.Equal(t, actorErr.ErrActorIDNotFound, m.InvokeReminder(actor.WithActivationID(t.Context(), "a"), "id", "r", params))
-
-	after, activationID := m.live(t, "id")
-	assert.Same(t, live, after)
-	assert.Equal(t, "b", activationID)
-	assert.Equal(t, int64(1), live.count.Load())
-	assert.Equal(t, 2, m.createdCount())
-
-	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "c"), "id"))
-	assert.Equal(t, 3, m.createdCount())
-	_, aerr = m.InvokeMethod(actor.WithActivationID(t.Context(), "b"), "id", "Count", nil)
-	assert.Equal(t, actorErr.ErrActorIDNotFound, aerr)
-	assert.Equal(t, int64(2), m.count(t, actor.WithActivationID(t.Context(), "c"), "id"))
-	assert.Equal(t, 3, m.createdCount())
-}
-
 func TestActivationIDReplacedCallSkipsSave(t *testing.T) {
 	t.Parallel()
 	m := newActivationTestManager(t)
@@ -335,6 +321,109 @@ func TestActivationIDReplacedCallSkipsSave(t *testing.T) {
 	assert.NotSame(t, old, fresh)
 	assert.Equal(t, "b", activationID)
 	assert.Equal(t, int64(2), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
+}
+
+func TestActivationIDDeactivatedCallSkipsSave(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+	old, _ := m.live(t, "id")
+	saves := old.saves.Load()
+	held := make(chan struct{})
+	release := make(chan struct{})
+	old.hold = func() {
+		close(held)
+		<-release
+	}
+
+	done := make(chan actorErr.ActorErr, 1)
+	go func() {
+		_, aerr := m.InvokeMethod(actor.WithActivationID(t.Context(), "a"), "id", "Hold", nil)
+		done <- aerr
+	}()
+	<-held
+
+	assert.Equal(t, actorErr.Success, m.DeactivateActor(t.Context(), "id"))
+	close(release)
+	assert.Equal(t, actorErr.ErrSaveStateFailed, <-done)
+	assert.Equal(t, saves, old.saves.Load())
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+	fresh, _ := m.live(t, "id")
+	assert.NotSame(t, old, fresh)
+	assert.Equal(t, 2, m.createdCount())
+}
+
+func TestActivationIDLateCreatorDoesNotOverwrite(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+	factory := m.factory
+	held := make(chan struct{})
+	release := make(chan struct{})
+	var first atomic.Bool
+	m.RegisterActorImplFactory(func() actor.ServerContext {
+		a := factory()
+		if first.CompareAndSwap(false, true) {
+			close(held)
+			<-release
+		}
+		return a
+	})
+
+	done := make(chan actorErr.ActorErr, 1)
+	go func() {
+		_, aerr := m.InvokeMethod(actor.WithActivationID(t.Context(), "a"), "id", "Count", nil)
+		done <- aerr
+	}()
+	<-held
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
+	live, _ := m.live(t, "id")
+	close(release)
+	assert.Equal(t, actorErr.ErrActorIDNotFound, <-done)
+
+	after, activationID := m.live(t, "id")
+	assert.Same(t, live, after)
+	assert.Equal(t, "b", activationID)
+	m.lock.Lock()
+	late := m.created[0]
+	m.lock.Unlock()
+	assert.Equal(t, int64(0), late.count.Load())
+	assert.Equal(t, int64(2), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
+}
+
+func TestActivationIDLateCreatorReusesSameID(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+	factory := m.factory
+	held := make(chan struct{})
+	release := make(chan struct{})
+	var first atomic.Bool
+	m.RegisterActorImplFactory(func() actor.ServerContext {
+		a := factory()
+		if first.CompareAndSwap(false, true) {
+			close(held)
+			<-release
+		}
+		return a
+	})
+
+	done := make(chan actorErr.ActorErr, 1)
+	go func() {
+		_, aerr := m.InvokeMethod(actor.WithActivationID(t.Context(), "a"), "id", "Count", nil)
+		done <- aerr
+	}()
+	<-held
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+	live, _ := m.live(t, "id")
+	close(release)
+	assert.Equal(t, actorErr.Success, <-done)
+
+	after, _ := m.live(t, "id")
+	assert.Same(t, live, after)
+	assert.Equal(t, int64(2), live.count.Load())
 }
 
 func TestActivationIDEmptyNeverResets(t *testing.T) {
@@ -388,6 +477,7 @@ func TestActivationIDReminder(t *testing.T) {
 	m.reminder(t, actor.WithActivationID(t.Context(), "a"), "id")
 	old, _ := m.live(t, "id")
 	assert.Equal(t, int64(2), old.count.Load())
+	assert.Equal(t, int64(3), old.saves.Load())
 	assert.Equal(t, 1, m.createdCount())
 
 	m.reminder(t, actor.WithActivationID(t.Context(), "b"), "id")
@@ -410,6 +500,7 @@ func TestActivationIDTimer(t *testing.T) {
 	m.timer(t, actor.WithActivationID(t.Context(), "a"), "id")
 	old, _ := m.live(t, "id")
 	assert.Equal(t, int64(2), old.count.Load())
+	assert.Equal(t, int64(3), old.saves.Load())
 	assert.Equal(t, 1, m.createdCount())
 
 	m.timer(t, actor.WithActivationID(t.Context(), "b"), "id")
@@ -421,6 +512,57 @@ func TestActivationIDTimer(t *testing.T) {
 	m.timer(t, t.Context(), "id")
 	assert.Equal(t, int64(2), fresh.count.Load())
 	assert.Equal(t, 2, m.createdCount())
+}
+
+func TestTimerCallbackErrorSkipsSave(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+
+	params, err := json.Marshal(&api.ActorTimerParam{CallBack: "Fail", DueTime: "1s", Period: "1s"})
+	require.NoError(t, err)
+	assert.Equal(t, actorErr.Success, m.InvokeTimer(t.Context(), "id", "t", params))
+	a, _ := m.live(t, "id")
+	assert.Equal(t, int64(1), a.saves.Load())
+}
+
+func TestActivationIDReplacedCallbackSkipsSave(t *testing.T) {
+	t.Parallel()
+	reminder, err := json.Marshal(&api.ActorReminderParams{DueTime: "1s", Period: "1s"})
+	require.NoError(t, err)
+	timer, err := json.Marshal(&api.ActorTimerParam{CallBack: "Hold", DueTime: "1s", Period: "1s"})
+	require.NoError(t, err)
+
+	for name, invoke := range map[string]func(m *activationTestManager, ctx context.Context) actorErr.ActorErr{
+		"reminder": func(m *activationTestManager, ctx context.Context) actorErr.ActorErr {
+			return m.InvokeReminder(ctx, "id", "r", reminder)
+		},
+		"timer": func(m *activationTestManager, ctx context.Context) actorErr.ActorErr {
+			return m.InvokeTimer(ctx, "id", "t", timer)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := newActivationTestManager(t)
+
+			assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+			old, _ := m.live(t, "id")
+			held := make(chan struct{})
+			release := make(chan struct{})
+			old.hold = func() {
+				close(held)
+				<-release
+			}
+
+			done := make(chan actorErr.ActorErr, 1)
+			go func() { done <- invoke(m, actor.WithActivationID(t.Context(), "a")) }()
+			<-held
+
+			assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
+			close(release)
+			assert.Equal(t, actorErr.ErrSaveStateFailed, <-done)
+			assert.Equal(t, int64(2), old.saves.Load())
+		})
+	}
 }
 
 func TestActivationIDDeactivateUnchanged(t *testing.T) {
