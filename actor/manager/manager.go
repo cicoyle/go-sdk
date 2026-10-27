@@ -140,7 +140,9 @@ func (m *DefaultActorManagerContext) getAndCreateActorContainerIfNotExist(ctx co
 		if activationID == "" || active.activationID == activationID {
 			return active.container, actorErr.Success
 		}
-		m.activeActors.CompareAndDelete(actorID, val)
+		if m.activeActors.CompareAndDelete(actorID, val) {
+			discard(active.container)
+		}
 	}
 	newContainer, aerr := NewDefaultActorContainerContext(ctx, actorID, m.factory(), m.serializer)
 	if aerr != actorErr.Success {
@@ -150,11 +152,19 @@ func (m *DefaultActorManagerContext) getAndCreateActorContainerIfNotExist(ctx co
 	if !loaded {
 		return newContainer, actorErr.Success
 	}
+	discard(newContainer)
 	active := val.(*activeActor)
 	if activationID == "" || active.activationID == activationID {
 		return active.container, actorErr.Success
 	}
 	return nil, actorErr.ErrActivationSuperseded
+}
+
+// discard runs as soon as a newer activation drops the container, so nothing can save through it after.
+func discard(container ActorContainerContext) {
+	if c, ok := container.(*DefaultActorContainerContext); ok {
+		c.discard()
+	}
 }
 
 func (m *DefaultActorManagerContext) isLive(actorID string, container ActorContainerContext) bool {

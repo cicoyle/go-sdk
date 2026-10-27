@@ -323,6 +323,59 @@ func TestActivationIDReplacedCallSkipsSave(t *testing.T) {
 	assert.Equal(t, int64(2), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
 }
 
+func TestActivationIDReplacedActorRefusesSave(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+	old, _ := m.live(t, "id")
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
+	fresh, _ := m.live(t, "id")
+
+	require.ErrorContains(t, old.GetStateManager().Save(t.Context()), "replaced by a newer activation")
+	require.ErrorContains(t, old.SaveState(t.Context()), "replaced by a newer activation")
+	require.NoError(t, fresh.GetStateManager().Save(t.Context()))
+}
+
+func TestActivationIDReplacedCallExplicitSaveRefused(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+	old, _ := m.live(t, "id")
+	held := make(chan struct{})
+	release := make(chan struct{})
+	saveErr := make(chan error, 1)
+	old.hold = func() {
+		close(held)
+		<-release
+		saveErr <- old.GetStateManager().Save(t.Context())
+	}
+
+	done := make(chan actorErr.ActorErr, 1)
+	go func() {
+		_, aerr := m.InvokeMethod(actor.WithActivationID(t.Context(), "a"), "id", "Hold", nil)
+		done <- aerr
+	}()
+	<-held
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
+	close(release)
+	require.ErrorContains(t, <-saveErr, "replaced by a newer activation")
+	assert.Equal(t, actorErr.ErrSaveStateFailed, <-done)
+}
+
+func TestActivationIDDeactivatedActorCanStillSave(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+	old, _ := m.live(t, "id")
+	require.Equal(t, actorErr.Success, m.DeactivateActor(t.Context(), "id"))
+
+	require.NoError(t, old.GetStateManager().Save(t.Context()))
+}
+
 func TestActivationIDDeactivatedCallSkipsSave(t *testing.T) {
 	t.Parallel()
 	m := newActivationTestManager(t)
@@ -390,6 +443,7 @@ func TestActivationIDLateCreatorDoesNotOverwrite(t *testing.T) {
 	late := m.created[0]
 	m.lock.Unlock()
 	assert.Equal(t, int64(0), late.count.Load())
+	require.ErrorContains(t, late.GetStateManager().Save(t.Context()), "replaced by a newer activation")
 	assert.Equal(t, int64(2), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
 }
 
@@ -424,6 +478,11 @@ func TestActivationIDLateCreatorReusesSameID(t *testing.T) {
 	after, _ := m.live(t, "id")
 	assert.Same(t, live, after)
 	assert.Equal(t, int64(2), live.count.Load())
+	m.lock.Lock()
+	late := m.created[0]
+	m.lock.Unlock()
+	require.ErrorContains(t, late.GetStateManager().Save(t.Context()), "replaced by a newer activation")
+	require.NoError(t, live.GetStateManager().Save(t.Context()))
 }
 
 func TestActivationIDEmptyNeverResets(t *testing.T) {
