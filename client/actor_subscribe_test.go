@@ -20,6 +20,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -715,6 +716,40 @@ func Test_metadataValue(t *testing.T) {
 	})
 }
 
+func TestSubscribeActorEventsActivationIDOldSidecar(t *testing.T) {
+	t.Parallel()
+
+	srv, client := newTestActorEventsServer(t)
+	srv.runtimeVersion.Store(new("1.19.0"))
+	handler := &testActorEventHandler{actorTypes: []string{"testActorType"}}
+	stop, err := client.SubscribeActorEvents(t.Context(), handler, ActorEventSubscriptionOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stop() })
+	session := recvWithTimeout(t, srv.sessions)
+
+	md := map[string]string{"Dapr-Actor-Activation-Id": "a", "Dapr-Reentrancy-Id": "re"}
+	for i := range 2 {
+		session.push(t, &pb.SubscribeActorEventsResponseAlpha1{
+			ResponseType: &pb.SubscribeActorEventsResponseAlpha1_InvokeRequest{
+				InvokeRequest: &pb.SubscribeActorEventsResponseInvokeRequestAlpha1{
+					Id: "i" + strconv.Itoa(i), ActorType: "testActorType", ActorId: "a", Method: "M", Metadata: md,
+				},
+			},
+		})
+		require.NotNil(t, recvWithTimeout(t, session.responses).GetInvokeResponse())
+	}
+
+	invokes := handler.invokeCalls()
+	require.Len(t, invokes, 2)
+	for _, call := range invokes {
+		assert.Empty(t, actor.ActivationIDFromContext(call.ctx))
+		reentrancyID, ok := reentrancyIDFromContext(call.ctx)
+		assert.True(t, ok)
+		assert.Equal(t, "re", reentrancyID)
+	}
+	assert.Equal(t, int32(1), srv.metadataCalls.Load())
+}
+
 func TestSubscribeActorEventsActivationID(t *testing.T) {
 	t.Parallel()
 
@@ -825,6 +860,17 @@ type fakeActorEventsServer struct {
 
 	initialRequests chan *pb.SubscribeActorEventsRequestInitialAlpha1
 	sessions        chan *actorEventsTestSession
+	runtimeVersion  atomic.Pointer[string]
+	metadataCalls   atomic.Int32
+}
+
+func (s *fakeActorEventsServer) GetMetadata(context.Context, *pb.GetMetadataRequest) (*pb.GetMetadataResponse, error) {
+	s.metadataCalls.Add(1)
+	version := "1.19.1"
+	if v := s.runtimeVersion.Load(); v != nil {
+		version = *v
+	}
+	return &pb.GetMetadataResponse{RuntimeVersion: version}, nil
 }
 
 // actorEventsTestSession represents one established actor events stream. The

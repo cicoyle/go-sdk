@@ -33,6 +33,7 @@ import (
 	pb "github.com/dapr/dapr/pkg/proto/runtime/v1"
 	"github.com/dapr/go-sdk/actor"
 	actorErr "github.com/dapr/go-sdk/actor/error"
+	"github.com/dapr/go-sdk/internal/activation"
 	"github.com/dapr/kit/events/loop"
 )
 
@@ -136,7 +137,8 @@ type actorEventSubscription struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	handler ActorEventHandler
+	handler    ActorEventHandler
+	activation *activation.Gate
 
 	// sendLoop serializes all writes to the stream on a single goroutine, so a
 	// blocking Send never stalls the read loop or the dispatch goroutines.
@@ -190,6 +192,7 @@ func (c *GRPCClient) SubscribeActorEvents(ctx context.Context, handler ActorEven
 		ctx:          streamCtx,
 		cancel:       cancel,
 		handler:      handler,
+		activation:   activation.NewGate(c.runtimeVersion),
 		stream:       stream,
 		createStream: createStream,
 	}
@@ -199,6 +202,14 @@ func (c *GRPCClient) SubscribeActorEvents(ctx context.Context, handler ActorEven
 	go s.run()
 
 	return s.Close, nil
+}
+
+func (c *GRPCClient) runtimeVersion(ctx context.Context) (string, error) {
+	md, err := c.GetMetadata(ctx)
+	if err != nil {
+		return "", err
+	}
+	return md.RuntimeVersion, nil
 }
 
 // subscribeActorEventsInitialRequest opens the actor events stream, sends the
@@ -378,7 +389,7 @@ func (s *actorEventSubscription) handleInvoke(stream pb.Dapr_SubscribeActorEvent
 	// Make the callback metadata (content-type, Dapr-Reentrancy-Id, ...)
 	// available to the actor code: InvokeActor propagates the reentrancy id
 	// from this context on outbound actor invocations.
-	ctx := actorCallbackContext(s.ctx, req.GetMetadata())
+	ctx := s.callbackContext(req.GetMetadata())
 
 	data, aerr := s.handler.InvokeActorMethod(ctx, req.GetActorType(), req.GetActorId(), req.GetMethod(), req.GetData())
 	if aerr != actorErr.Success {
@@ -408,8 +419,9 @@ func (s *actorEventSubscription) handleInvoke(stream pb.Dapr_SubscribeActorEvent
 	})
 }
 
-func actorCallbackContext(ctx context.Context, md map[string]string) context.Context {
-	return actor.WithActivationID(withActorCallbackMetadata(ctx, md), metadataValue(md, actor.ActivationIDHeader))
+func (s *actorEventSubscription) callbackContext(md map[string]string) context.Context {
+	ctx := withActorCallbackMetadata(s.ctx, md)
+	return actor.WithActivationID(ctx, s.activation.ID(ctx, metadataValue(md, actor.ActivationIDHeader)))
 }
 
 func metadataValue(md map[string]string, key string) string {
@@ -439,7 +451,7 @@ func (s *actorEventSubscription) handleReminder(stream pb.Dapr_SubscribeActorEve
 		return
 	}
 
-	aerr := s.handler.InvokeReminder(actorCallbackContext(s.ctx, req.GetMetadata()), req.GetActorType(), req.GetActorId(), req.GetName(), params)
+	aerr := s.handler.InvokeReminder(s.callbackContext(req.GetMetadata()), req.GetActorType(), req.GetActorId(), req.GetName(), params)
 	if aerr != actorErr.Success {
 		s.sendRequestFailed(stream, req.GetId(), aerr)
 		return
@@ -472,7 +484,7 @@ func (s *actorEventSubscription) handleTimer(stream pb.Dapr_SubscribeActorEvents
 		return
 	}
 
-	aerr := s.handler.InvokeTimer(actorCallbackContext(s.ctx, req.GetMetadata()), req.GetActorType(), req.GetActorId(), req.GetName(), params)
+	aerr := s.handler.InvokeTimer(s.callbackContext(req.GetMetadata()), req.GetActorType(), req.GetActorId(), req.GetName(), params)
 	if aerr != actorErr.Success {
 		s.sendRequestFailed(stream, req.GetId(), aerr)
 		return

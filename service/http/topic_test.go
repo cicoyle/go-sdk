@@ -36,6 +36,7 @@ import (
 	"github.com/dapr/go-sdk/actor"
 	"github.com/dapr/go-sdk/actor/api"
 	"github.com/dapr/go-sdk/actor/mock"
+	"github.com/dapr/go-sdk/internal/activation"
 	"github.com/dapr/go-sdk/service/common"
 	"github.com/dapr/go-sdk/service/internal"
 )
@@ -600,10 +601,15 @@ func rawActorCall(t *testing.T, s *Server, method, path, header, body string) *h
 	return rr
 }
 
+func sidecarVersion(version string) *activation.Gate {
+	return activation.NewGate(func(context.Context) (string, error) { return version, nil })
+}
+
 func TestActorActivationIDHeader(t *testing.T) {
 	t.Parallel()
 
 	s := newServer("", nil)
+	s.activation = sidecarVersion("1.19.1")
 	s.registerBaseHandler()
 	s.RegisterActorImplFactoryContext(func() actor.ServerContext { return &ActivationEchoActor{} })
 
@@ -676,8 +682,22 @@ func (a *LateCreatorActor) Count(context.Context) (int64, error) {
 
 func (a *LateCreatorActor) ReminderCall(string, []byte, string, string) {}
 
+func TestActorActivationIDOldSidecar(t *testing.T) {
+	s := newServer("", nil)
+	s.activation = sidecarVersion("1.19.0")
+	s.registerBaseHandler()
+	s.RegisterActorImplFactoryContext(func() actor.ServerContext { return &ActivationEchoActor{} })
+
+	base := "/actors/activationEchoActor/" + strconv.FormatInt(time.Now().UnixNano(), 36) + "old-sidecar/method/"
+	body := rawActorRequest(t, s, http.MethodPut, base+"ActivationID", "Dapr-Actor-Activation-Id: a", "")
+	assert.JSONEq(t, `""`, body)
+	assert.Equal(t, "1", rawActorRequest(t, s, http.MethodPut, base+"Count", "Dapr-Actor-Activation-Id: a", ""))
+	assert.Equal(t, "2", rawActorRequest(t, s, http.MethodPut, base+"Count", "Dapr-Actor-Activation-Id: b", ""))
+}
+
 func TestActorLateCreatorRetryable(t *testing.T) {
 	s := newServer("", nil)
+	s.activation = sidecarVersion("1.19.1")
 	s.registerBaseHandler()
 	var nested atomic.Pointer[func()]
 	s.RegisterActorImplFactoryContext(func() actor.ServerContext {

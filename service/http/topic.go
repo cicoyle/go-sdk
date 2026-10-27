@@ -175,7 +175,7 @@ func (s *Server) registerBaseHandler() {
 		actorID := chi.URLParam(r, "actorId")
 		methodName := chi.URLParam(r, "methodName")
 		reqData, _ := io.ReadAll(r.Body)
-		rspData, err := runtime.GetActorRuntimeInstanceContext().InvokeActorMethod(actorCallbackContext(r), actorType, actorID, methodName, reqData)
+		rspData, err := runtime.GetActorRuntimeInstanceContext().InvokeActorMethod(s.actorCallbackContext(r), actorType, actorID, methodName, reqData)
 		if err == actorErr.ErrActorTypeNotFound || err == actorErr.ErrActorIDNotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -214,7 +214,7 @@ func (s *Server) registerBaseHandler() {
 		actorID := chi.URLParam(r, "actorId")
 		reminderName := chi.URLParam(r, "reminderName")
 		reqData, _ := io.ReadAll(r.Body)
-		err := runtime.GetActorRuntimeInstanceContext().InvokeReminder(actorCallbackContext(r), actorType, actorID, reminderName, reqData)
+		err := runtime.GetActorRuntimeInstanceContext().InvokeReminder(s.actorCallbackContext(r), actorType, actorID, reminderName, reqData)
 		if err == actorErr.ErrActorTypeNotFound || err == actorErr.ErrActorIDNotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -233,7 +233,7 @@ func (s *Server) registerBaseHandler() {
 		actorID := chi.URLParam(r, "actorId")
 		timerName := chi.URLParam(r, "timerName")
 		reqData, _ := io.ReadAll(r.Body)
-		err := runtime.GetActorRuntimeInstanceContext().InvokeTimer(actorCallbackContext(r), actorType, actorID, timerName, reqData)
+		err := runtime.GetActorRuntimeInstanceContext().InvokeTimer(s.actorCallbackContext(r), actorType, actorID, timerName, reqData)
 		if err == actorErr.ErrActorTypeNotFound || err == actorErr.ErrActorIDNotFound {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -359,6 +359,6 @@ func writeStatus(w http.ResponseWriter, s common.SubscriptionResponseStatus) {
 	}
 }
 
-func actorCallbackContext(r *http.Request) context.Context {
-	return actor.WithActivationID(r.Context(), r.Header.Get(actor.ActivationIDHeader))
+func (s *Server) actorCallbackContext(r *http.Request) context.Context {
+	return actor.WithActivationID(r.Context(), s.activation.ID(r.Context(), r.Header.Get(actor.ActivationIDHeader)))
 }
