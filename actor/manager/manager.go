@@ -197,6 +197,12 @@ func (m *DefaultActorManagerContext) InvokeMethod(ctx context.Context, actorID, 
 		return nil, aerr
 	}
 	if len(returnValue) == 1 {
+		if returnValue[0].Interface() != nil {
+			return nil, actorErr.ErrActorInvokeFailed
+		}
+		if aerr := m.saveState(ctx, actorID, actorContainer); aerr != actorErr.Success {
+			return nil, aerr
+		}
 		return nil, actorErr.Success
 	}
 

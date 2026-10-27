@@ -188,6 +188,14 @@ func (a *ActivationTestActor) Hold(context.Context) (int64, error) {
 	return a.count.Add(1), nil
 }
 
+func (a *ActivationTestActor) Incr(context.Context) error {
+	if a.hold != nil {
+		a.hold()
+	}
+	a.count.Add(1)
+	return nil
+}
+
 func (a *ActivationTestActor) Fail(context.Context) error {
 	return errors.New("fail")
 }
@@ -582,6 +590,45 @@ func TestTimerCallbackErrorSkipsSave(t *testing.T) {
 	assert.Equal(t, actorErr.Success, m.InvokeTimer(t.Context(), "id", "t", params))
 	a, _ := m.live(t, "id")
 	assert.Equal(t, int64(1), a.saves.Load())
+}
+
+func TestErrorOnlyMethodSaves(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+
+	_, aerr := m.InvokeMethod(t.Context(), "id", "Incr", nil)
+	assert.Equal(t, actorErr.Success, aerr)
+	a, _ := m.live(t, "id")
+	assert.Equal(t, int64(2), a.saves.Load())
+
+	_, aerr = m.InvokeMethod(t.Context(), "id", "Fail", nil)
+	assert.Equal(t, actorErr.ErrActorInvokeFailed, aerr)
+	assert.Equal(t, int64(2), a.saves.Load())
+}
+
+func TestActivationIDReplacedErrorOnlyCallSkipsSave(t *testing.T) {
+	t.Parallel()
+	m := newActivationTestManager(t)
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "a"), "id"))
+	old, _ := m.live(t, "id")
+	held := make(chan struct{})
+	release := make(chan struct{})
+	old.hold = func() {
+		close(held)
+		<-release
+	}
+
+	done := make(chan actorErr.ActorErr, 1)
+	go func() {
+		_, aerr := m.InvokeMethod(actor.WithActivationID(t.Context(), "a"), "id", "Incr", nil)
+		done <- aerr
+	}()
+	<-held
+
+	assert.Equal(t, int64(1), m.count(t, actor.WithActivationID(t.Context(), "b"), "id"))
+	close(release)
+	assert.Equal(t, actorErr.ErrSaveStateFailed, <-done)
 }
 
 func TestActivationIDReplacedCallbackSkipsSave(t *testing.T) {
